@@ -1,0 +1,20 @@
+package com.redhat.gpte.policyquote;
+
+import com.redhat.gpte.policyquote.model.Driver
+import com.redhat.gpte.policyquote.model.Policy
+
+rule "NoviceDriverSurcharge"
+
+	no-loop 
+	ruleflow-group "surcharge"
+	lock-on-active 
+    
+    when
+        //conditions
+        $driver : Driver(age < 20, $id : id)
+        $policy : Policy(price > 0, policyType == "AUTO", driver == $id)
+    then
+        //actions
+        modify($policy) {setPrice($policy.getPrice() + 250)};
+
+end
