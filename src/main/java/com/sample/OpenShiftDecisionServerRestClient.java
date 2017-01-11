@@ -1,5 +1,17 @@
 package com.sample;
 
+import static com.sample.AgendaGroup.ASSIGNMENT;
+import static com.sample.AgendaGroup.CERTIFICATION;
+import static com.sample.AgendaGroup.STORE_QUALIFICATION;
+import static com.sample.AgendaGroup.WORK_ITEM_QUALIFICATION;
+import static com.sample.Artifact.newArtifact;
+import static com.sample.TestObjectCreator.asList;
+import static com.sample.TestObjectCreator.newLineItem;
+import static com.sample.TestObjectCreator.newRph;
+import static com.sample.TestObjectCreator.newStore;
+import static com.sample.TestObjectCreator.newWorkItem;
+import static java.lang.System.currentTimeMillis;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,88 +34,86 @@ import com.cognizant.cvs.poc.routing_rules.WorkItem;
 
 public class OpenShiftDecisionServerRestClient {
 
-	public static final String USERNAME = "kieserver";
-	public static final String PASSWORD = "kieserver1!";
-	public static final String SERVER_URL = "http://policyquote-app-sandip-desale-cognizant-com-bxms-infra.cloudapps.na.openshift.opentlc.com/kie-server/services/rest/server";
-	public static final String CONTAINER = "policyquote";
-	public static final String KIESESSION = "ksession7";
-
+	private static final String USERNAME = "kieserver";
+	private static final String PASSWORD = "kieserver1!";
+	private static final String SERVER_URL = "http://policyquote-app-sandip-desale-cognizant-com-bxms-infra.cloudapps.na.openshift.opentlc.com/kie-server/services/rest/server";
+	private static final String CONTAINER = "policyquote";
+	private static final String KIESESSION = "ksession6";
+	private static KieServicesClient KIE_CLIENT = null;
+	private static RuleServicesClient RULES_CLIENT = null;
+	private static KieCommands KIE_COMMANDS = null;
 	private static final MarshallingFormat FORMAT = MarshallingFormat.JSON;
 
+	static {
+		KIE_CLIENT = configure_new(SERVER_URL, USERNAME, PASSWORD);
+		RULES_CLIENT = KIE_CLIENT.getServicesClient(RuleServicesClient.class);
+		KIE_COMMANDS = KieServices.Factory.get().getCommands();
+	}
+
+	@SuppressWarnings("unchecked")
 	public static void invokeRulesService() {
+		long startMillis = currentTimeMillis();
 		LineItem lineItem = newLineItem("1", "xyz", "NH", "1");
 		WorkItem workItem = newWorkItem("1", "abc", null, asList(lineItem), "NH");
 		Rph rph1 = newRph("1", "NH", "xyz_c", "1");
 		Rph rph2 = newRph("2", "NH", "abc", "1");
-
 		Store store1 = newStore("1", "NH", asList(rph1, rph2), false, 10);
+		writeToConsole("Facts being injected to remote drools service:", workItem, store1);
 
-		KieServicesClient kieServicesClient = configure_new(SERVER_URL, USERNAME, PASSWORD);
-		RuleServicesClient rulesClient = kieServicesClient.getServicesClient(RuleServicesClient.class);
-		KieCommands kieCommands = KieServices.Factory.get().getCommands();
+		// Work Item Qualification
+		ExecutionResults results = createAndExecuteCommands(asList(newArtifact(workItem, "workItem")),
+				WORK_ITEM_QUALIFICATION);
+		List<Object> objectList = (List<Object>) results.getValue("workItem");
+		workItem = (WorkItem) objectList.get(0);
 
-		List<Command<?>> commands = new ArrayList<Command<?>>();
-		commands.add(kieCommands.newInsert(workItem, "workItem"));
-		commands.add(kieCommands.newInsert(store1, "store1"));
-		commands.add(kieCommands.newAgendaGroupSetFocus("assignment"));
-		commands.add(kieCommands.newAgendaGroupSetFocus("store-qualification"));
-		commands.add(kieCommands.newAgendaGroupSetFocus("certification"));
-		commands.add(kieCommands.newAgendaGroupSetFocus("work-item-qualification"));
-		commands.add(kieCommands.newFireAllRules());
-		commands.add(kieCommands.newGetObjects("workItem"));
-		commands.add(kieCommands.newGetObjects("store1"));
+		// Certification
+		results = createAndExecuteCommands(asList(newArtifact(workItem, "workItem")), CERTIFICATION);
+		objectList = (List<Object>) results.getValue("workItem");
+		workItem = (WorkItem) objectList.get(0);
 
-		Command<?> batchCommand = kieCommands.newBatchExecution(commands, KIESESSION);
-		ServiceResponse<ExecutionResults> executeResponse = rulesClient.executeCommandsWithResults(CONTAINER,
-				batchCommand);
+		// Store Qualification
+		results = createAndExecuteCommands(asList(newArtifact(workItem, "workItem"), newArtifact(store1, "store1")),
+				STORE_QUALIFICATION);
+		objectList = (List<Object>) results.getValue("store1");
+		workItem = (WorkItem) objectList.get(0);
+		store1 = (Store) objectList.get(1);
 
-		if (executeResponse.getType() == ResponseType.SUCCESS) {
-			System.out.println("Commands executed with success! Response: ");
-			ExecutionResults results = executeResponse.getResult();
-			System.out.println(results.getValue("workItem"));
-			System.out.println(results.getValue("store1"));
-		} else {
-			System.out.println("Error executing rules. Message: ");
-			System.out.println(executeResponse.getMsg());
-		}
-
+		// Assignment
+		results = createAndExecuteCommands(asList(newArtifact(workItem, "workItem"), newArtifact(store1, "store1")),
+				ASSIGNMENT);
+		objectList = (List<Object>) results.getValue("store1");
+		store1 = (Store) objectList.get(0);
+		writeToConsole("Results:", store1, "Time taken: " + (currentTimeMillis() - startMillis));
 	}
 
-	public static KieServicesClient configure_new(String url, String username, String password) {
+	private static ExecutionResults createAndExecuteCommands(List<Artifact> artifacts, AgendaGroup agendaGroup) {
+		List<Command<?>> commands = new ArrayList<Command<?>>();
+		for (Artifact artifact : artifacts)
+			commands.add(KIE_COMMANDS.newInsert(artifact.getFact(), artifact.getFactName()));
+		commands.add(KIE_COMMANDS.newAgendaGroupSetFocus(agendaGroup.getValue()));
+		commands.add(KIE_COMMANDS.newFireAllRules());
+		for (Artifact artifact : artifacts)
+			commands.add(KIE_COMMANDS.newGetObjects(artifact.getFactName()));
+		Command<?> batchCommand = KIE_COMMANDS.newBatchExecution(commands, KIESESSION);
+		ServiceResponse<ExecutionResults> executeResponse = RULES_CLIENT.executeCommandsWithResults(CONTAINER,
+				batchCommand);
+		ExecutionResults results = null;
+		if (executeResponse.getType() == ResponseType.SUCCESS)
+			results = executeResponse.getResult();
+		else
+			System.out.println("Error executing rules. Message: " + executeResponse.getMsg());
+		return results;
+	}
+
+	private static KieServicesClient configure_new(String url, String username, String password) {
 		KieServicesConfiguration config = KieServicesFactory.newRestConfiguration(url, username, password);
 		config.setMarshallingFormat(FORMAT);
-
 		return KieServicesFactory.newKieServicesClient(config);
 	}
 
-	protected static WorkItem newWorkItem(String id, String clientId, String status, List<LineItem> lineItems,
-			String state) {
-		WorkItem workItem = new WorkItem(id, clientId, status, lineItems, state, false);
-		return workItem;
-	}
-
-	protected static LineItem newLineItem(String id, String name, String state, String orderId) {
-		LineItem lineItem = new LineItem(id, name, state, orderId);
-		return lineItem;
-	}
-
-	protected static Rph newRph(String id, String state, String certification, String pharmacyId) {
-		Rph rph = new Rph(id, state, certification, pharmacyId, new ArrayList<WorkItem>(), false);
-		return rph;
-	}
-
-	protected static Store newStore(String id, String state, List<Rph> pharmacists, boolean shortlisted,
-			int availability) {
-		Store store = new Store(id, state, pharmacists, shortlisted, availability);
-		return store;
-	}
-
-	@SuppressWarnings("unchecked")
-	protected static <T> List<T> asList(T... objects) {
-		List<T> list = new ArrayList<T>();
-		for (T object : objects)
-			list.add(object);
-		return list;
+	private static void writeToConsole(Object... objects) {
+		for (Object object : objects)
+			System.out.println(object);
 	}
 
 }
